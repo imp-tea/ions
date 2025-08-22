@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Huddleston's Ion Simulator</title>
+  <style>
+    :root{
+      --bg:#000;
+      --panel:#0c0c0f;
+      --panel-2:#131318;
+      --text:#ddd;
+      --muted:#9aa0a6;
+      --accent:#c6aa5c; /* low-saturation gold */
+      --border:#21222a;
+      --btn:#1a1b21;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif}
+    .app{display:grid;grid-template-columns:320px 1fr;height:100%;}
+    .sidebar{background:linear-gradient(180deg,var(--panel),var(--panel-2));border-right:1px solid var(--border);overflow:auto}
+    .group{padding:12px 16px;border-bottom:1px solid var(--border)}
+    .group h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 8px;color:#b6b8bd}
+    .row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin:6px 0}
+    input[type="range"]{width:100%}
+    input, select, button{background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px}
+    button{cursor:pointer}
+    button.primary{background:var(--accent);border-color:#6b5d2d;color:#111;font-weight:600}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .button-row{display:flex;gap:8px;flex-wrap:wrap}
+    .stage{position:relative;overflow:hidden}
+    canvas{display:block;width:100%;height:100%}
+    .legend{display:flex;gap:8px;align-items:center;color:#a8abb1;font-size:12px}
+    .swatch{width:14px;height:14px;border-radius:50%;border:1px solid #222}
+    .footer{padding:12px 16px;color:#888;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="group">
+        <h2>Simulation</h2>
+        <div class="button-row">
+          <button id="playBtn" class="primary">Pause</button>
+          <button id="stepBtn">Step</button>
+          <button id="resetBtn">Reset</button>
+          <button id="clearBtn">Clear</button>
+          <button id="defaultsBtn">Default settings</button>
+        </div>
+        <div class="row"><label>Time scale <span id="timeScaleVal"></span></label><input id="timeScale" type="range" min="0.05" max="4" step="0.05" value="1"/></div>
+        <div class="row"><label>Coulomb K <span id="kVal"></span></label><input id="k" type="range" min="0" max="20000" step="100" value="10000"/></div>
+        <div class="row"><label>Center accel <span id="gcVal"></span></label><input id="gCenter" type="range" min="0" max="10" step="0.1" value="1"/></div>
+        <div class="row"><label>Linear damping <span id="dampVal"></span></label><input id="damping" type="range" min="0" max="2" step="0.01" value="0"/></div>
+        <div class="row"><label>Radius scale <span id="radScaleVal"></span></label><input id="radiusScale" type="range" min="0.05" max="0.5" step="0.01" value="0.3"/></div>
+        <div class="row"><label>Show title</label><input id="showTitle" type="checkbox" checked/></div>
+      </div>
+
+      <div class="group">
+        <h2>Add ions</h2>
+        <div class="row"><label>Species</label>
+          <select id="species"></select>
+        </div>
+        <div class="row"><label>Count</label><input id="count" type="number" min="1" max="500" value="25"/></div>
+        <div class="button-row">
+          <button id="addBtn">Add Ions</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Legend</h2>
+        <div class="legend"><div class="swatch" style="background:#9f4040"></div> Positive ions</div>
+        <div class="legend"><div class="swatch" style="background:#40409f"></div> Negative ions</div>
+        <div class="legend"><div class="swatch" style="background:#7f7f7f"></div> Neutral</div>
+      </div>
+
+      <div class="footer">Drag ions to fling them. Walls are solid. Coulomb force uses ε=1 softening to avoid singularities.</div>
+    </aside>
+
+    <main class="stage">
+      <canvas id="c"></canvas>
+    </main>
+  </div>
+
+  <!-- planck.js (Box2D port) -->
+  <script src="https://unpkg.com/planck-js@0.3.0/dist/planck.min.js"></script>
+  <script>
+  // ======== Ion Simulator (single-file) ========
+  // Uses planck.js (Box2D port) for rigid body integration and collisions.
+  // Custom forces: Coulomb interaction + constant centerward acceleration.
+
+  (function(){
+    const pl = planck; // global from CDN
+
+    // ---- Elements (ported from provided Lua) ----
+    const ELEMENTS = {
+      Hydrogen:{symbol:'H',mass:1.01,radius:20,charge:1},
+      Helium:{symbol:'He',mass:4,radius:31,charge:0},
+      Lithium:{symbol:'Li',mass:6.94,radius:167,charge:1},
+      Beryllium:{symbol:'Be',mass:9.01,radius:112,charge:2},
+      Boron:{symbol:'B',mass:10.81,radius:87,charge:3},
+      Carbon:{symbol:'C',mass:12.01,radius:67,charge:4},
+      Nitrogen:{symbol:'N',mass:14.01,radius:56,charge:-3},
+      Oxygen:{symbol:'O',mass:16,radius:48,charge:-2},
+      Fluorine:{symbol:'F',mass:19,radius:42,charge:-1},
+      Neon:{symbol:'Ne',mass:20.18,radius:38,charge:0},
+      Sodium:{symbol:'Na',mass:22.99,radius:190,charge:1},
+      Magnesium:{symbol:'Mg',mass:24.31,radius:145,charge:2},
+      Aluminium:{symbol:'Al',mass:26.98,radius:118,charge:3},
+      Silicon:{symbol:'Si',mass:28.09,radius:111,charge:4},
+      Phosphorus:{symbol:'P',mass:30.97,radius:98,charge:-3},
+      Sulfur:{symbol:'S',mass:32.06,radius:88,charge:-2},
+      Chlorine:{symbol:'Cl',mass:35.45,radius:79,charge:-1},
+      Argon:{symbol:'Ar',mass:39.95,radius:71,charge:0},
+      Potassium:{symbol:'K',mass:39.1,radius:243,charge:1},
+      Calcium:{symbol:'Ca',mass:40.08,radius:194,charge:2},
+      Gallium:{symbol:'Ga',mass:69.72,radius:136,charge:3},
+      Germanium:{symbol:'Ge',mass:72.63,radius:125,charge:4},
+      Arsenic:{symbol:'As',mass:74.92,radius:114,charge:3},
+      Selenium:{symbol:'Se',mass:78.96,radius:103,charge:-2},
+      Bromine:{symbol:'Br',mass:79.9,radius:94,charge:-1},
+      Krypton:{symbol:'Kr',mass:83.8,radius:88,charge:0},
+    };
+
+    // Populate species dropdown
+    const speciesSel = document.getElementById('species');
+    Object.keys(ELEMENTS).forEach(k=>{
+      const opt=document.createElement('option');
+      const e = ELEMENTS[k];
+      opt.value=k; opt.textContent=`${k} (${e.symbol}, q=${e.charge})`;
+      speciesSel.appendChild(opt);
+    });
+    speciesSel.value = 'Hydrogen';
+
+    // ---- DOM ----
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    const playBtn = document.getElementById('playBtn');
+    const stepBtn = document.getElementById('stepBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const defaultsBtn = document.getElementById('defaultsBtn');
+
+    const addBtn = document.getElementById('addBtn');
+
+    const timeScaleEl = document.getElementById('timeScale');
+    const kEl = document.getElementById('k');
+    const gCenterEl = document.getElementById('gCenter');
+    const dampingEl = document.getElementById('damping');
+    const radiusScaleEl = document.getElementById('radiusScale');
+    const showTitleEl = document.getElementById('showTitle');
+
+    const timeScaleVal = document.getElementById('timeScaleVal');
+    const kVal = document.getElementById('kVal');
+    const gcVal = document.getElementById('gcVal');
+    const dampVal = document.getElementById('dampVal');
+    const radScaleVal = document.getElementById('radScaleVal');
+
+    const countEl = document.getElementById('count');
+
+    // ---- State ----
+    let world, ground;
+    let bodies = []; // {body, element}
+    let mouse = {x:0,y:0, down:false};
+    let mouseJoint = null;
+    let running = true;
+    let lastT = performance.now();
+    let acc = 0;
+    const FIXED_DT = 1/60;
+
+    // Controls / Parameters (defaults per request)
+    const DEFAULTS = {
+      timeScale: 1,
+      K: 10000,
+      gCenter: 1,
+      damping: 0,
+      radiusScale: 0.3,
+    };
+
+    let params = {
+      ...DEFAULTS,
+      dragHz: 6,       // elastic drag stiffness (fixed)
+      dragDamp: 0.7,   // elastic drag damping (fixed)
+      massScale: 0.1,  // from Lua
+    };
+
+    function setDefaults(){
+      timeScaleEl.value = DEFAULTS.timeScale;
+      kEl.value = DEFAULTS.K;
+      gCenterEl.value = DEFAULTS.gCenter;
+      dampingEl.value = DEFAULTS.damping;
+      radiusScaleEl.value = DEFAULTS.radiusScale;
+      showTitleEl.checked = true;
+      params = {...params, ...DEFAULTS};
+      refreshLabels();
+    }
+
+    // Display current values
+    function refreshLabels(){
+      params.timeScale = parseFloat(timeScaleEl.value);
+      params.K = parseFloat(kEl.value);
+      params.gCenter = parseFloat(gCenterEl.value);
+      params.damping = parseFloat(dampingEl.value);
+      params.radiusScale = parseFloat(radiusScaleEl.value);
+      timeScaleVal.textContent = `×${params.timeScale.toFixed(2)}`;
+      kVal.textContent = params.K.toFixed(0);
+      gcVal.textContent = params.gCenter.toFixed(1);
+      dampVal.textContent = params.damping.toFixed(2);
+      radScaleVal.textContent = params.radiusScale.toFixed(2);
+    }
+
+    // ---- Utils ----
+    function randRange(a,b){return a + Math.random()*(b-a)}
+
+    function colorForCharge(q){
+      // Mimic Lua palette mapping roughly: (0.5+0.125*c, 0.5-0.125*|c|, 0.5-0.125*c)
+      const r = Math.max(0, Math.min(1, 0.5 + 0.125*q));
+      const g = Math.max(0, Math.min(1, 0.5 - 0.125*Math.abs(q)));
+      const b = Math.max(0, Math.min(1, 0.5 - 0.125*q));
+      return `rgb(${(r*255)|0}, ${(g*255)|0}, ${(b*255)|0})`;
+    }
+
+    function makeWalls(){
+      const w = canvas.clientWidth, h = canvas.clientHeight; // CSS pixels!
+      const t = 20; // thickness (half-sizes inside pl.Box)
+      const wallDef = {density:0, friction:0, restitution:0.2, filterGroupIndex:0};
+      const left = world.createBody();
+      left.createFixture(pl.Box(t, h, pl.Vec2(-t, h/2), 0), wallDef);
+      const right = world.createBody();
+      right.createFixture(pl.Box(t, h, pl.Vec2(w + t, h/2), 0), wallDef);
+      const top = world.createBody();
+      top.createFixture(pl.Box(w, t, pl.Vec2(w/2, -t), 0), wallDef);
+      const bottom = world.createBody();
+      bottom.createFixture(pl.Box(w, t, pl.Vec2(w/2, h + t), 0), wallDef);
+    }
+
+    function createWorld(){
+      world = new pl.World({gravity: pl.Vec2(0,0)});
+      ground = world.createBody();
+      makeWalls();
+      bodies = [];
+    }
+
+    function addIon(elementKey, x, y, spread, vx, vy){
+      const E = ELEMENTS[elementKey];
+      const r = E.radius * params.radiusScale;
+      const px = x + randRange(-spread, spread);
+      const py = y + randRange(-spread, spread);
+      const body = world.createDynamicBody({position: pl.Vec2(px, py), fixedRotation: true});
+      const fixture = body.createFixture(pl.Circle(r), {
+        density: 1, // placeholder; replaced below to fit desired mass
+        friction: 0,
+        restitution: 0.2,
+      });
+      const targetMass = E.mass * params.massScale;
+      const density = targetMass / (Math.PI * r * r);
+      fixture.setDensity(Math.max(0.0001, density));
+      body.resetMassData();
+      body.setLinearDamping(params.damping);
+      body.setLinearVelocity(pl.Vec2(vx||0, vy||0));
+      bodies.push({body, E});
+    }
+
+    function clearAll(){
+      bodies.forEach(b=>world.destroyBody(b.body));
+      bodies = [];
+    }
+
+    function resizeCanvas(){
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
+    }
+
+    function reset(){
+      createWorld();
+      // Default initial conditions from Lua: 100 H near (center+100), 50 O near (center-100)
+      const cx = canvas.clientWidth/2; const cy = canvas.clientHeight/2;
+      for(let i=0;i<100;i++) addIon('Hydrogen', cx+100, cy+100, 100, 0, 0);
+      for(let i=0;i<50;i++) addIon('Oxygen',  cx-100, cy-100, 100, 0, 0);
+    }
+
+    // ---- Forces ----
+    function applyForces(){
+      const n = bodies.length;
+      const K = params.K; // Coulomb constant (tunable)
+      const eps2 = 1;     // softening ε^2 with ε=1 (fixed)
+
+      // Pairwise Coulomb forces
+      for(let i=0;i<n;i++){
+        const bi = bodies[i].body; const qi = bodies[i].E.charge;
+        const pi = bi.getPosition();
+        for(let j=i+1;j<n;j++){
+          const bj = bodies[j].body; const qj = bodies[j].E.charge;
+          if(qi === 0 && qj === 0) continue; // skip neutrals
+          const pj = bj.getPosition();
+          const dx = pi.x - pj.x;
+          const dy = pi.y - pj.y;
+          const r2 = dx*dx + dy*dy + eps2;
+          const invR = 1/Math.sqrt(r2);
+          const ux = dx * invR;
+          const uy = dy * invR;
+          const mag = (K * qi * qj) / r2; // signed
+          const fx = mag * ux;
+          const fy = mag * uy;
+          bi.applyForce(pl.Vec2( fx,  fy), pi);
+          bj.applyForce(pl.Vec2(-fx, -fy), pj);
+        }
+      }
+
+      // Constant-magnitude centerward acceleration (independent of distance)
+      if(params.gCenter !== 0){
+        const cx = canvas.clientWidth/2, cy = canvas.clientHeight/2;
+        for(let i=0;i<n;i++){
+          const b = bodies[i].body;
+          const p = b.getPosition();
+          let dx = (cx - p.x), dy = (cy - p.y);
+          const len = Math.hypot(dx,dy) || 1;
+          dx /= len; dy /= len; // unit toward center
+          const mass = b.getMass();
+          const F = params.gCenter * mass; // F = m * a
+          b.applyForce(pl.Vec2(dx*F, dy*F), p);
+        }
+      }
+    }
+
+    // ---- Mouse interaction ----
+    function getBodyAtPoint(x,y){
+      let found = null;
+      const aabb = new pl.AABB(pl.Vec2(x-0.001,y-0.001), pl.Vec2(x+0.001,y+0.001));
+      world.queryAABB(aabb, fixture => {
+        const body = fixture.getBody();
+        if(body.isDynamic() && fixture.testPoint(pl.Vec2(x,y))){
+          found = body; return false;
+        }
+        return true;
+      });
+      return found;
+    }
+
+    function onMouseDown(e){
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+      mouse.x = x; mouse.y = y; mouse.down = true;
+      const body = getBodyAtPoint(x, y);
+      if(body){
+        const mjd = new pl.MouseJoint({
+          maxForce: 1000 * body.getMass(),
+          frequencyHz: params.dragHz,
+          dampingRatio: params.dragDamp,
+        }, ground, body, pl.Vec2(x, y));
+        mouseJoint = world.createJoint(mjd);
+        body.setAwake(true);
+      }
+    }
+    function onMouseMove(e){
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+      if(mouseJoint){ mouseJoint.setTarget(pl.Vec2(mouse.x, mouse.y)); }
+    }
+    function onMouseUp(){
+      mouse.down = false;
+      if(mouseJoint){ world.destroyJoint(mouseJoint); mouseJoint = null; }
+    }
+
+    // ---- Rendering ----
+    function drawTitle(){
+      if(!document.getElementById('showTitle').checked) return;
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = 'rgb(198,170,92)';
+      ctx.font = '800 48px system-ui, Segoe UI, Roboto, sans-serif';
+      ctx.textBaseline = 'top';
+      ctx.fillText("Huddleston's Ion Simulator", 16, 16);
+      ctx.restore();
+    }
+
+    function draw(){
+      // Clear
+      ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+      // Title behind particles
+      drawTitle();
+      // Draw ions
+      for(const {body,E} of bodies){
+        const p = body.getPosition();
+        const r = E.radius * params.radiusScale;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+        ctx.fillStyle = colorForCharge(E.charge);
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.stroke();
+      }
+    }
+
+    // ---- Loop ----
+    function step(now){
+      const dtRaw = (now - lastT)/1000; lastT = now;
+      acc += dtRaw * (running ? params.timeScale : 0);
+      const maxSteps = 5; // avoid spiral of death
+      let steps = 0;
+      while(acc >= FIXED_DT && steps < maxSteps){
+        for(const o of bodies){ o.body.setLinearDamping(params.damping); }
+        applyForces();
+        world.step(FIXED_DT);
+        acc -= FIXED_DT; steps++;
+      }
+      draw();
+      requestAnimationFrame(step);
+    }
+
+    // ---- UI bindings ----
+    function bindRange(el){
+      const update = ()=>{ refreshLabels(); };
+      el.addEventListener('input', update); el.addEventListener('change', update);
+    }
+    [timeScaleEl,kEl,gCenterEl,dampingEl,radiusScaleEl].forEach(bindRange);
+
+    playBtn.addEventListener('click', ()=>{
+      running = !running; playBtn.textContent = running ? 'Pause' : 'Play';
+    });
+    stepBtn.addEventListener('click', ()=>{ if(!running){ acc += FIXED_DT; }});
+    resetBtn.addEventListener('click', reset);
+    clearBtn.addEventListener('click', clearAll);
+    defaultsBtn.addEventListener('click', setDefaults);
+
+    addBtn.addEventListener('click', ()=>{
+      const k = speciesSel.value; const n = Math.max(1, parseInt(countEl.value||1));
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      for(let i=0;i<n;i++){
+        const x = randRange(40, w-40);
+        const y = randRange(40, h-40);
+        const vx = randRange(-30, 30);
+        const vy = randRange(-30, 30);
+        addIon(k, x, y, 0, vx, vy);
+      }
+    });
+
+    // Mouse joint events
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    // Resize handling
+    const ro = new ResizeObserver(()=>{
+      resizeCanvas();
+      // Rebuild world and keep bodies (approximate) on resize
+      const old = bodies.map(o=>({E:o.E, pos:o.body.getPosition(), vel:o.body.getLinearVelocity()}));
+      createWorld();
+      for(const o of old){
+        const b = world.createDynamicBody({position: pl.Vec2(o.pos.x, o.pos.y), fixedRotation:true});
+        const r = o.E.radius * params.radiusScale; 
+        const fx = b.createFixture(pl.Circle(r), {density:1, friction:0, restitution:0.2});
+        const targetMass = o.E.mass * params.massScale; const density = targetMass/(Math.PI*r*r);
+        fx.setDensity(Math.max(0.0001, density)); b.resetMassData();
+        b.setLinearDamping(params.damping); b.setLinearVelocity(o.vel);
+        bodies.push({body:b, E:o.E});
+      }
+    });
+    ro.observe(canvas);
+
+    // Init
+    resizeCanvas();
+    createWorld();
+    setDefaults();
+    reset();
+    requestAnimationFrame(step);
+
+  })();
+  </script>
+</body>
+</html>
