@@ -51,7 +51,6 @@
         <div class="row"><label>Center accel <span id="gcVal"></span></label><input id="gCenter" type="range" min="0" max="10" step="0.1" value="1"/></div>
         <div class="row"><label>Linear damping <span id="dampVal"></span></label><input id="damping" type="range" min="0" max="2" step="0.01" value="0"/></div>
         <div class="row"><label>Radius scale <span id="radScaleVal"></span></label><input id="radiusScale" type="range" min="0.05" max="0.5" step="0.01" value="0.3"/></div>
-        <div class="row"><label>Show title</label><input id="showTitle" type="checkbox" checked/></div>
       </div>
 
       <div class="group">
@@ -147,7 +146,6 @@
     const gCenterEl = document.getElementById('gCenter');
     const dampingEl = document.getElementById('damping');
     const radiusScaleEl = document.getElementById('radiusScale');
-    const showTitleEl = document.getElementById('showTitle');
 
     const timeScaleVal = document.getElementById('timeScaleVal');
     const kVal = document.getElementById('kVal');
@@ -189,7 +187,6 @@
       gCenterEl.value = DEFAULTS.gCenter;
       dampingEl.value = DEFAULTS.damping;
       radiusScaleEl.value = DEFAULTS.radiusScale;
-      showTitleEl.checked = true;
       params = {...params, ...DEFAULTS};
       refreshLabels();
     }
@@ -366,7 +363,6 @@
 
     // ---- Rendering ----
     function drawTitle(){
-      if(!document.getElementById('showTitle').checked) return;
       ctx.save();
       ctx.globalAlpha = 0.25;
       ctx.fillStyle = 'rgb(198,170,92)';
